@@ -298,8 +298,15 @@ jobs:
           echo "kernel image: $K"
           cp "$K" "ak3/$(basename "$K")"
           rm -rf ak3/.git ak3/ramdisk/placeholder 2>/dev/null || true
-          cd ak3 && zip -r9 "../dream2lte-ksu-susfs.zip" . -x '.git*' >/dev/null
-          cd .. && ls -l dream2lte-ksu-susfs.zip
+          # Name the zip after what is actually IN it. Hardcoding
+          # "ksu-susfs" meant build 3 - which had no SUSFS at all - shipped a
+          # zip called dream2lte-ksu-susfs.zip, which is just a lie waiting to
+          # confuse someone months later.
+          if [ "${{ inputs.susfs }}" = "true" ]; then FEAT="ksu-susfs"; else FEAT="ksu-only"; fi
+          ZIPNAME="dream2lte-${FEAT}-build${{ github.run_number }}.zip"
+          cd ak3 && zip -r9 "../$ZIPNAME" . -x '.git*' >/dev/null
+          cd .. && ls -l "$ZIPNAME"
+          echo "ZIPNAME=$ZIPNAME" >> $GITHUB_ENV
 
       - name: Upload
         if: always()
@@ -307,7 +314,7 @@ jobs:
         with:
           name: dream2lte-kernel-${{ github.run_number }}
           path: |
-            dream2lte-ksu-susfs.zip
+            dream2lte-*.zip
             kernel_source/out/arch/arm64/boot/Image*
             kernel_source/out/.config
           if-no-files-found: warn
