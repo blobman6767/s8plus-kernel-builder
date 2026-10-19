@@ -37,6 +37,27 @@ index a3d19a43..3a234d6f 100644
  
  	if ((disposition & INPUT_PASS_TO_DEVICE) && dev->event)
  		dev->event(dev, type, code, value);
+diff --git a/drivers/staging/samsung/sec_gaf.c b/drivers/staging/samsung/sec_gaf.c
+index 8bb9577c..a3c10f2f 100644
+--- a/drivers/staging/samsung/sec_gaf.c
++++ b/drivers/staging/samsung/sec_gaf.c
+@@ -158,7 +158,16 @@ static struct GAForensicINFO {
+ 
+ 	.rq_struct_curr = 0,
+ 
++#if defined(CONFIG_THREAD_INFO_IN_TASK) && defined(CONFIG_SMP)
++	/* CONFIG_THREAD_INFO_IN_TASK moves 'cpu' out of thread_info and into
++	 * task_struct. These offsets are only read by Samsung's offline
++	 * ramdump tooling, so point it at the field's new home. */
++	.thread_info_struct_cpu = offsetof(struct task_struct, cpu),
++#elif defined(CONFIG_THREAD_INFO_IN_TASK)
++	.thread_info_struct_cpu = 0,
++#else
+ 	.thread_info_struct_cpu = offsetof(struct thread_info, cpu),
++#endif
+ 
+ 	.task_struct_struct_prio = offsetof(struct task_struct, prio),
+ 	.task_struct_struct_static_prio
 diff --git a/fs/Makefile b/fs/Makefile
 index 81deaa39..21f3676a 100644
 --- a/fs/Makefile
@@ -758,7 +779,7 @@ index 172924f2..42d40da7 100644
 +#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 +
 diff --git a/fs/notify/fdinfo.c b/fs/notify/fdinfo.c
-index fd98e510..fb6c7731 100644
+index fd98e510..121ea8c1 100644
 --- a/fs/notify/fdinfo.c
 +++ b/fs/notify/fdinfo.c
 @@ -12,6 +12,9 @@
@@ -844,7 +865,7 @@ index fd98e510..fb6c7731 100644
 +			}
 +			seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:%x ",
 +					   inode_mark->wd, path.dentry->d_inode->i_ino, path.dentry->d_inode->i_sb->s_dev,
-+			  inotify_mark_user_mask(mark), mark->ignored_mask);
++			  mask, mark->ignored_mask);
 +			show_mark_fhandle(m, path.dentry->d_inode);
 +			seq_putc(m, '\n');
 +			path_put(&path);

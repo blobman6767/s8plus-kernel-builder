@@ -85,3 +85,26 @@ form. `getname_flags` is already declared non-static in `include/linux/fs.h`.
 `ksu_handle_sys_read` is declared 1-arg here but 3-arg in the driver - benign,
 the driver body never dereferences the two extra params (they exist for the
 tracepoint path), and this is what the proven redmi tree does.
+
+## Fixes found by build 8
+
+Build 8 cleared `fs/stat.c` and `fs/exec.c` and surfaced two more:
+
+3. **`fs/notify/fdinfo.c`: no `inotify_mark_user_mask()` in this tree.** The
+   redmi fixup commit (`4284431b`) rewrites that `seq_printf` to call a helper
+   this kernel does not have. Replaced with this tree's own local
+   `u32 mask = mark->mask & IN_ALL_EVENTS`, matching its original `seq_printf`.
+
+4. **`drivers/staging/samsung/sec_gaf.c`: `struct thread_info` has no member
+   `cpu`.** This is a genuine consequence of `select THREAD_INFO_IN_TASK` -
+   that option moves `cpu` (and `task`) out of `thread_info` into
+   `task_struct`, and Samsung's ramdump-offset exporter still reads the old
+   location. Guarded to point at `offsetof(struct task_struct, cpu)` when
+   `THREAD_INFO_IN_TASK && SMP`. Not fixed by disabling `CONFIG_SEC_DEBUG`:
+   that is `=y` here and gates a lot more than this file.
+
+A sweep for every other site that `THREAD_INFO_IN_TASK` could break
+(`offsetof(struct thread_info, cpu|task)`, `ti->task`, `ti->cpu`,
+`current_thread_info()->task`) found only two more, both already correct:
+`arch/arm64/include/asm/current.h` reads `sp_el0` under the option, and
+`include/asm-generic/current.h` is not used by arm64.
