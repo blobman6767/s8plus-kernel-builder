@@ -77,12 +77,16 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/tc"
           cd "$GITHUB_WORKSPACE/tc"
-          git clone --depth=1 -b master \
+          # NOTE: 'master' does not exist here (raw.githubusercontent 200s on it by
+          # falling back to the default branch - misleading). Real branches top out
+          # at lineage-19.1, which does carry both prefixes.
+          git clone --depth=1 -b lineage-19.1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 \
             gcc4.9
           echo "--- toolchain binaries ---"
-          ls gcc4.9/bin | grep -E 'gcc$|ld$|as$' | head -10
-          test -x gcc4.9/bin/aarch64-linux-android-gcc
+          # '|| true': grep exits 1 on no match and pipefail would kill the step
+          ls gcc4.9/bin | grep -E 'kernel-(gcc|ld|as)$' | head || true
+          test -x gcc4.9/bin/aarch64-linux-androidkernel-gcc
           echo "TC=$GITHUB_WORKSPACE/tc/gcc4.9/bin" >> $GITHUB_ENV
 
       - name: Clone kernel source
@@ -161,7 +165,8 @@ jobs:
           cd kernel_source
           export PATH="$TC:$PATH"
           export ARCH=arm64 SUBARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-android-
+          # device tree: TARGET_KERNEL_CROSS_COMPILE_PREFIX := aarch64-linux-androidkernel-
+          export CROSS_COMPILE=aarch64-linux-androidkernel-
           if [ "${{ inputs.identity_spoof }}" = "true" ]; then
             export KBUILD_BUILD_USER='${{ inputs.build_user }}'
             export KBUILD_BUILD_HOST='${{ inputs.build_host }}'
@@ -169,7 +174,7 @@ jobs:
             export KBUILD_BUILD_VERSION=1
           fi
           echo "CROSS_COMPILE=$CROSS_COMPILE"
-          aarch64-linux-android-gcc --version | head -1
+          aarch64-linux-androidkernel-gcc --version | head -1
 
           make O=out ARCH=arm64 "${{ inputs.defconfig }}"
           echo "=== resolved KSU/SUSFS/localversion in .config ==="
