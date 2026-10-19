@@ -57,3 +57,31 @@ with the matching `void __user **arg` signature.
     git clone --depth=1 -b lineage-23.2 \
       https://codeberg.org/universal8895/kernel_samsung_universal8895 k
     cd k && git apply --check ../patches/0001-susfs-v2.2.0-kernel-4.4-exynos8895.patch
+
+## Fixes found by build 4
+
+Build 4 got all the way through the config gates (SUSFS v2.2.0 detected,
+`CONFIG_THREAD_INFO_IN_TASK=y`, `CONFIG_KSU_SUSFS=y` survived kconfig, driver
+reported all seven hooks found) and then failed compiling `fs/stat.o`:
+
+1. **Declaration order.** In this tree `vfs_fstatat()` is at line ~124 but the
+   stock KSU extern block is ~200 lines further down, so the SUSFS declarations
+   landed *after* their use -> `'ksu_su_compat_enabled' undeclared`, three
+   `-Werror=implicit-function-declaration`, and a resulting `conflicting types
+   for '__ksu_is_allow_uid_for_current'`. The SUSFS declarations now sit right
+   after `EXPORT_SYMBOL(vfs_fstat)`, where the redmi tree keeps them, and the
+   late block carries only the non-SUSFS extern (its dangling
+   `__attribute__((hot))` would otherwise have attached to a variable).
+
+2. **`filename_lookup` was `static`** in this tree's `fs/namei.c` (the redmi
+   tree has it non-static). SUSFS calls it from `fs/stat.c` and `fs/open.c`, so
+   it is de-staticized under `#ifdef CONFIG_KSU_SUSFS` and left static
+   otherwise. No `EXPORT_SYMBOL` needed - all three objects are built into
+   vmlinux.
+
+Checked and NOT a problem: `susfs_is_inode_sus_path` has a 2-arg form only
+under `#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,6,0)`; 4.4 takes the 1-arg
+form. `getname_flags` is already declared non-static in `include/linux/fs.h`.
+`ksu_handle_sys_read` is declared 1-arg here but 3-arg in the driver - benign,
+the driver body never dereferences the two extra params (they exist for the
+tracepoint path), and this is what the proven redmi tree does.

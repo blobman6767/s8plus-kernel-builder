@@ -120,7 +120,7 @@ index 65c9f136..1e117e84 100644
  	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
  }
 diff --git a/fs/namei.c b/fs/namei.c
-index 7c6055e8..112635b2 100644
+index 7c6055e8..c71f2565 100644
 --- a/fs/namei.c
 +++ b/fs/namei.c
 @@ -37,10 +37,22 @@
@@ -287,7 +287,23 @@ index 7c6055e8..112635b2 100644
  	if (nd->last_type == LAST_NORM && nd->last.name[nd->last.len])
  		nd->flags |= LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
  
-@@ -3134,6 +3210,9 @@ static int do_last(struct nameidata *nd,
+@@ -2242,8 +2318,15 @@ static int path_lookupat(struct nameidata *nd, unsigned flags, struct path *path
+ 	return err;
+ }
+ 
++/* SUSFS calls this from fs/stat.c and fs/open.c, so it cannot be static
++ * there. Kept static otherwise so non-SUSFS builds are unchanged. */
++#ifdef CONFIG_KSU_SUSFS
++int filename_lookup(int dfd, struct filename *name, unsigned flags,
++			   struct path *path, struct path *root)
++#else
+ static int filename_lookup(int dfd, struct filename *name, unsigned flags,
+ 			   struct path *path, struct path *root)
++#endif
+ {
+ 	int retval;
+ 	struct nameidata nd;
+@@ -3134,6 +3217,9 @@ static int do_last(struct nameidata *nd,
  
  	nd->flags &= ~LOOKUP_PARENT;
  	nd->flags |= op->intent;
@@ -297,7 +313,7 @@ index 7c6055e8..112635b2 100644
  
  	if (nd->last_type != LAST_NORM) {
  		error = handle_dots(nd, nd->last_type);
-@@ -3411,6 +3490,10 @@ out:
+@@ -3411,6 +3497,10 @@ out:
  static struct file *path_openat(struct nameidata *nd,
  			const struct open_flags *op, unsigned flags)
  {
@@ -308,7 +324,7 @@ index 7c6055e8..112635b2 100644
  	const char *s;
  	struct file *file;
  	int opened = 0;
-@@ -3441,12 +3524,43 @@ static struct file *path_openat(struct nameidata *nd,
+@@ -3441,12 +3531,43 @@ static struct file *path_openat(struct nameidata *nd,
  			break;
  		}
  	}
@@ -352,7 +368,7 @@ index 7c6055e8..112635b2 100644
  	if (unlikely(error)) {
  		if (error == -EOPENSTALE) {
  			if (flags & LOOKUP_RCU)
-@@ -4677,6 +4791,10 @@ out:
+@@ -4677,6 +4798,10 @@ out:
  }
  EXPORT_SYMBOL(readlink_copy);
  
@@ -363,7 +379,7 @@ index 7c6055e8..112635b2 100644
  /*
   * A helper for ->readlink().  This should be used *ONLY* for symlinks that
   * have ->follow_link() touching nd only in nd_set_link().  Using (or not
-@@ -4694,6 +4812,16 @@ int generic_readlink(struct dentry *dentry, char __user *buffer, int buflen)
+@@ -4694,6 +4819,16 @@ int generic_readlink(struct dentry *dentry, char __user *buffer, int buflen)
  		if (IS_ERR(link))
  			return PTR_ERR(link);
  	}
@@ -1704,7 +1720,7 @@ index 3494d7a8..e58dd1f4 100644
  	return error;
  }
 diff --git a/fs/stat.c b/fs/stat.c
-index a38d6387..5f0dce54 100644
+index a38d6387..2c7e7966 100644
 --- a/fs/stat.c
 +++ b/fs/stat.c
 @@ -17,6 +17,13 @@
@@ -1756,7 +1772,21 @@ index a38d6387..5f0dce54 100644
  
  	generic_fillattr(inode, stat);
  	return 0;
-@@ -93,6 +119,10 @@ int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
+@@ -87,12 +113,24 @@ int vfs_fstat(unsigned int fd, struct kstat *stat)
+ }
+ EXPORT_SYMBOL(vfs_fstat);
+ 
++#ifdef CONFIG_KSU_SUSFS
++extern struct static_key_true ksu_su_compat_enabled;
++extern bool __ksu_is_allow_uid_for_current(uid_t uid);
++extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
++extern int filename_lookup(int dfd, struct filename *name, unsigned flags,
++				struct path *path, struct path *root);
++#endif
++
+ int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
+ 		int flag)
+ {
  	struct path path;
  	int error = -EINVAL;
  	unsigned int lookup_flags = 0;
@@ -1767,7 +1797,7 @@ index a38d6387..5f0dce54 100644
  
  	if ((flag & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
  		      AT_EMPTY_PATH)) != 0)
-@@ -103,7 +133,23 @@ int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
+@@ -103,7 +141,23 @@ int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
  	if (flag & AT_EMPTY_PATH)
  		lookup_flags |= LOOKUP_EMPTY;
  retry:
@@ -1791,24 +1821,15 @@ index a38d6387..5f0dce54 100644
  	if (error)
  		goto out;
  
-@@ -289,9 +335,17 @@ SYSCALL_DEFINE2(newlstat, const char __user *, filename,
+@@ -287,7 +341,7 @@ SYSCALL_DEFINE2(newlstat, const char __user *, filename,
+ 	return cp_new_stat(&stat, statbuf);
+ }
  
- #ifdef CONFIG_KSU
+-#ifdef CONFIG_KSU
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_SUSFS)
  __attribute__((hot)) 
-+#ifdef CONFIG_KSU_SUSFS
-+extern struct static_key_true ksu_su_compat_enabled;
-+extern bool __ksu_is_allow_uid_for_current(uid_t uid);
-+extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
-+extern int filename_lookup(int dfd, struct filename *name, unsigned flags,
-+				struct path *path, struct path *root);
-+#else
  extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
  				int *flags);
- #endif
-+#endif
- 
- #if !defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_SYS_NEWFSTATAT)
- SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
 @@ -301,7 +355,9 @@ SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
  	int error;
  
