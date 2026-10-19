@@ -11,30 +11,36 @@ on:
         description: 'Kernel branch'
         required: true
         default: 'lineage-23.2'
-      ksu_repo:
-        description: 'KernelSU fork to vendor into KernelSU/ (Baka-SU/BakaSU has inline SUSFS; backslashxx/KernelSU is the ROM stock, no SUSFS)'
+      ksu_source:
+        description: 'Where the KSU driver comes from. resukisu-pinned = the ReSukiSU v4.2.0-rc1 snapshot proven on the Redmi (the ONLY one whose susfs_compat.mk does not hard-error); clone = clone ksu_repo instead'
         required: true
+        default: 'resukisu-pinned'
+        type: choice
+        options: ['resukisu-pinned', 'clone']
+      ksu_repo:
+        description: 'KernelSU repo to clone (only when ksu_source=clone). NOTE BakaSU default branch refuses to build with CONFIG_KSU_SUSFS=y: tools/susfs_compat.mk ends in $(error Please wait susfs update.)'
+        required: false
         default: 'https://github.com/Baka-SU/BakaSU'
       ksu_ref:
-        description: 'KernelSU ref (branch/tag/commit; "default" = repo default branch)'
-        required: true
+        description: 'KernelSU ref (only when ksu_source=clone; "default" = repo default branch)'
+        required: false
         default: 'default'
-      defconfig:
-        description: 'Defconfig'
-        required: true
-        default: 'exynos8895-dream2lte_defconfig'
-      hook_mode:
-        description: 'KSU hook mode. manual = required for 4.4 (TRACEPOINT is GKI 5.10+ only); keep = leave the defconfig/Kconfig default'
-        required: true
-        default: 'keep'
-        type: choice
-        options: ['keep', 'manual']
-      enable_susfs:
-        description: 'Append SUSFS configs to the defconfig (needs susfs kernel sources - BakaSU does NOT ship them)'
+      susfs:
+        description: 'Apply the kernel-side SUSFS v2.2.0 patch and select the SuSFS inline hook mode'
         required: true
         default: 'true'
         type: choice
         options: ['true', 'false']
+      hook_mode:
+        description: 'Hook mode when susfs=false. manual = required for 4.4 (TRACEPOINT is GKI 5.10+ only); keep = leave the defconfig default'
+        required: true
+        default: 'keep'
+        type: choice
+        options: ['keep', 'manual']
+      defconfig:
+        description: 'Defconfig'
+        required: true
+        default: 'exynos8895-dream2lte_defconfig'
       identity_spoof:
         description: 'Make the kernel report a stock-like Samsung identity'
         required: true
@@ -57,6 +63,13 @@ on:
         description: 'KBUILD_BUILD_TIMESTAMP'
         required: false
         default: 'Tue Apr  6 19:35:32 KST 2021'
+
+env:
+  # The proven 4.4 ReSukiSU snapshot + matching SUSFS v2.2.0 sources.
+  # Upstream github.com/ReSukiSU/ReSukiSU now 301s to Baka-SU/BakaSU, whose
+  # current tree hard-errors on SUSFS, so this snapshot is pinned instead.
+  KSU_SNAPSHOT_REPO: 'https://github.com/blobman6767/android_kernel_xiaomi_sdm660_44'
+  KSU_SNAPSHOT_REF: '02242273834397c9c3a9cfa636adf8367c960412'
 
 jobs:
   build:
@@ -91,30 +104,80 @@ jobs:
 
       - name: Clone kernel source
         run: |
+          set -euo pipefail
           git clone --depth=1 -b "${{ inputs.kernel_branch }}" \
             "${{ inputs.kernel_repo }}" kernel_source
           cd kernel_source
-          echo "--- version ---"; head -5 Makefile | grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL)'
+          echo "--- version ---"; grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL)' Makefile | head -3
 
-      - name: Vendor the KernelSU fork into KernelSU/
+      - name: Apply kernel-side SUSFS v2.2.0 patch
+        if: inputs.susfs == 'true'
         run: |
+          set -euo pipefail
           cd kernel_source
-          rm -rf KernelSU
-          if [ "${{ inputs.ksu_ref }}" = "default" ]; then
-            git clone --depth=1 "${{ inputs.ksu_repo }}" KernelSU
+          P="$GITHUB_WORKSPACE/builder/patches/0001-susfs-v2.2.0-kernel-4.4-exynos8895.patch"
+          test -f "$P"
+          # --check first so a drifted branch fails loudly here rather than
+          # half-applying and producing a confusing compile error later.
+          git apply --check "$P"
+          git apply "$P"
+          echo "--- susfs sources in place ---"
+          ls -l fs/susfs.c include/linux/susfs.h include/linux/susfs_def.h
+          grep -E '^#define SUSFS_VERSION' include/linux/susfs.h
+          echo "--- THREAD_INFO_IN_TASK now selected by arm64 ---"
+          grep -n 'select THREAD_INFO_IN_TASK' arch/arm64/Kconfig
+
+      - name: Vendor the KSU driver into KernelSU/kernel
+        run: |
+          set -euo pipefail
+          cd kernel_source
+          # drivers/kernelsu is a symlink -> ../KernelSU/kernel/, and
+          # drivers/Kconfig does source "drivers/kernelsu/Kconfig", so the
+          # driver has to land at KernelSU/kernel/.
+          echo "--- integration points ---"
+          ls -ld drivers/kernelsu; readlink drivers/kernelsu
+          grep -n 'kernelsu' drivers/Makefile drivers/Kconfig
+          rm -rf KernelSU && mkdir -p KernelSU
+
+          if [ "${{ inputs.ksu_source }}" = "resukisu-pinned" ]; then
+            # Fetch the pinned commit directly. A --depth=1 clone would only
+            # get the default branch tip, and this commit lives on
+            # resukisu-susfs-newfstat, so fetch the SHA by name instead.
+            mkdir ksusnap && cd ksusnap
+            git init -q
+            git remote add origin "$KSU_SNAPSHOT_REPO"
+            git sparse-checkout init --cone
+            git sparse-checkout set drivers/kernelsu
+            git fetch -q --depth=1 --filter=blob:none origin "$KSU_SNAPSHOT_REF"
+            git checkout -q FETCH_HEAD
+            test "$(git rev-parse HEAD)" = "$KSU_SNAPSHOT_REF"
+            cd ..
+            cp -a ksusnap/drivers/kernelsu KernelSU/kernel
+            rm -rf ksusnap
           else
-            git clone --depth=1 -b "${{ inputs.ksu_ref }}" "${{ inputs.ksu_repo }}" KernelSU
+            if [ "${{ inputs.ksu_ref }}" = "default" ]; then
+              git clone --depth=1 "${{ inputs.ksu_repo }}" ksuclone
+            else
+              git clone --depth=1 -b "${{ inputs.ksu_ref }}" "${{ inputs.ksu_repo }}" ksuclone
+            fi
+            # upstream layout already has kernel/
+            cp -a ksuclone KernelSU_tmp && rm -rf KernelSU && mv KernelSU_tmp KernelSU
+            rm -rf ksuclone
           fi
-          echo "--- KernelSU tree ---"; ls KernelSU
-          echo "--- driver dir ---";   ls KernelSU/kernel | head -20
-          echo "--- version markers ---"
-          grep -rnE 'KSU_VERSION|SUSFS_VERSION' KernelSU/kernel/Makefile KernelSU/kernel/Kconfig 2>/dev/null | head -5 || true
-          echo "--- does this fork carry inline SUSFS? ---"
-          ls KernelSU/kernel | grep -i susfs || echo "  (no susfs files in KernelSU/kernel)"
-          find KernelSU -maxdepth 3 -iname '*susfs*' | head -10 || true
+
+          echo "--- driver tree ---"
+          test -f KernelSU/kernel/Kbuild && test -f KernelSU/kernel/Kconfig
+          ls KernelSU/kernel | head -20
+          echo "--- symlink resolves? ---"
+          test -f drivers/kernelsu/Kbuild && echo "  drivers/kernelsu/Kbuild OK"
+          echo "--- driver identity ---"
+          grep -nE 'REPO_NAME :=|KSU_VERSION :=|KSU_TAG_NAME :=' KernelSU/kernel/Kbuild || true
+          echo "--- does this driver hard-error on susfs? ---"
+          grep -n 'error' KernelSU/kernel/tools/susfs_compat.mk || echo "  (no \$(error) - good)"
 
       - name: Patch defconfig
         run: |
+          set -euo pipefail
           cd kernel_source
           D="arch/arm64/configs/${{ inputs.defconfig }}"
           cp "$D" "$D.orig"
@@ -125,34 +188,35 @@ jobs:
             sed -i 's|^CONFIG_LOCALVERSION_AUTO=y|# CONFIG_LOCALVERSION_AUTO is not set|' "$D"
           fi
 
-          if [ "${{ inputs.hook_mode }}" = "manual" ]; then
+          if [ "${{ inputs.susfs }}" = "true" ]; then
+            # CONFIG_KSU_SUSFS is the third member of the hook-mode *choice*
+            # (with KSU_TRACEPOINT_HOOK and KSU_MANUAL_HOOK). defconfig is
+            # last-wins, so this block must come last.
+            # Only options BakaSU/ReSukiSU actually define are listed - the
+            # TRY_UMOUNT / AUTO_ADD_* ones do not exist and are silently dropped.
             {
               echo ''
-              echo '# === hook mode: TRACEPOINT is GKI 5.10+ only; 4.4 needs manual hooks ==='
-              echo '# CONFIG_KSU_TRACEPOINT_HOOK is not set'
-              echo '# CONFIG_KSU_KPROBES_HOOK is not set'
-              echo 'CONFIG_KSU_MANUAL_HOOK=y'
-            } >> "$D"
-          fi
-
-          if [ "${{ inputs.enable_susfs }}" = "true" ]; then
-            {
-              echo ''
-              echo '# === SUSFS (appended last: KSU hook mode may be a Kconfig choice) ==='
+              echo '# === SUSFS inline hook mode (choice member; must be LAST to win) ==='
               echo 'CONFIG_KSU=y'
+              echo '# CONFIG_KSU_TRACEPOINT_HOOK is not set'
+              echo '# CONFIG_KSU_MANUAL_HOOK is not set'
               echo 'CONFIG_KSU_SUSFS=y'
               echo 'CONFIG_KSU_SUSFS_SUS_PATH=y'
               echo 'CONFIG_KSU_SUSFS_SUS_MOUNT=y'
-              echo 'CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y'
-              echo 'CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y'
               echo 'CONFIG_KSU_SUSFS_SUS_KSTAT=y'
-              echo 'CONFIG_KSU_SUSFS_TRY_UMOUNT=y'
-              echo 'CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y'
+              echo 'CONFIG_KSU_SUSFS_SUS_MAP=y'
               echo 'CONFIG_KSU_SUSFS_SPOOF_UNAME=y'
               echo 'CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y'
               echo 'CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y'
               echo 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y'
-              echo 'CONFIG_KSU_SUSFS_SUS_MAP=y'
+              echo 'CONFIG_KSU_SUSFS_ENABLE_LOG=y'
+            } >> "$D"
+          elif [ "${{ inputs.hook_mode }}" = "manual" ]; then
+            {
+              echo ''
+              echo '# === hook mode: TRACEPOINT is GKI 5.10+ only; 4.4 needs manual hooks ==='
+              echo '# CONFIG_KSU_TRACEPOINT_HOOK is not set'
+              echo 'CONFIG_KSU_MANUAL_HOOK=y'
             } >> "$D"
           fi
 
@@ -165,20 +229,35 @@ jobs:
           cd kernel_source
           export PATH="$TC:$PATH"
           export ARCH=arm64 SUBARCH=arm64
-          # device tree: TARGET_KERNEL_CROSS_COMPILE_PREFIX := aarch64-linux-androidkernel-
           export CROSS_COMPILE=aarch64-linux-androidkernel-
+
+          # An empty .scmversion makes scripts/setlocalversion return nothing,
+          # so the banner gets no trailing '+' (dirty-tree marker) and no git
+          # hash. Stock Samsung reads '4.4.302-21427293', not '...-21427293+'.
+          : > .scmversion
+
           if [ "${{ inputs.identity_spoof }}" = "true" ]; then
             export KBUILD_BUILD_USER='${{ inputs.build_user }}'
             export KBUILD_BUILD_HOST='${{ inputs.build_host }}'
             export KBUILD_BUILD_TIMESTAMP='${{ inputs.build_timestamp }}'
             export KBUILD_BUILD_VERSION=1
           fi
-          echo "CROSS_COMPILE=$CROSS_COMPILE"
           aarch64-linux-androidkernel-gcc --version | head -1
 
           make O=out ARCH=arm64 "${{ inputs.defconfig }}"
+
           echo "=== resolved KSU/SUSFS/localversion in .config ==="
-          grep -E '^#? ?CONFIG_(KSU|LOCALVERSION)' out/.config | head -40 || true
+          grep -E '^#? ?CONFIG_(KSU|LOCALVERSION|THREAD_INFO_IN_TASK)' out/.config || true
+
+          # A kconfig *choice* member whose deps are unmet is dropped SILENTLY.
+          # Without this gate the build would succeed with no SUSFS at all.
+          if [ "${{ inputs.susfs }}" = "true" ]; then
+            grep -qx 'CONFIG_THREAD_INFO_IN_TASK=y' out/.config \
+              || { echo "FATAL: THREAD_INFO_IN_TASK not enabled - CONFIG_KSU_SUSFS cannot be selected"; exit 1; }
+            grep -qx 'CONFIG_KSU_SUSFS=y' out/.config \
+              || { echo "FATAL: CONFIG_KSU_SUSFS was dropped by kconfig"; exit 1; }
+            echo "  >>> SUSFS is really enabled <<<"
+          fi
 
           # NOTE: never pipe make - a pipe's exit status comes from the last
           # command and silently masks compile failures (cost us build 1).
@@ -187,14 +266,25 @@ jobs:
           echo "=== artifacts ==="
           ls -l out/arch/arm64/boot/
 
+      - name: Verify kernel identity and features
+        if: success()
+        run: |
+          set -euo pipefail
+          python3 builder/scripts/verify_kernel.py \
+            kernel_source/out/arch/arm64/boot
+
       - name: Package AnyKernel3
         if: success()
         run: |
+          set -euo pipefail
           cd "$GITHUB_WORKSPACE"
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
           cp builder/anykernel/anykernel.sh ak3/anykernel.sh
+          # The stock dream2lte boot image carries a RAW (uncompressed) arm64
+          # Image plus a separate 232K DTBH device-tree section, which
+          # AnyKernel3 leaves untouched. So plain 'Image' is correct here and
+          # no Image.gz-dtb is needed.
           K=$(ls kernel_source/out/arch/arm64/boot/Image.gz-dtb \
-                 kernel_source/out/arch/arm64/boot/Image.gz \
                  kernel_source/out/arch/arm64/boot/Image 2>/dev/null | head -1)
           echo "kernel image: $K"
           cp "$K" "ak3/$(basename "$K")"
