@@ -284,8 +284,17 @@ jobs:
           # Image plus a separate 232K DTBH device-tree section, which
           # AnyKernel3 leaves untouched. So plain 'Image' is correct here and
           # no Image.gz-dtb is needed.
-          K=$(ls kernel_source/out/arch/arm64/boot/Image.gz-dtb \
-                 kernel_source/out/arch/arm64/boot/Image 2>/dev/null | head -1)
+          # NOTE: do not use `ls a b | head -1` here. With set -euo pipefail,
+          # ls exits non-zero when the first path is absent (this device never
+          # produces Image.gz-dtb), which killed the step in build 11 even
+          # though the kernel had built and verified fine.
+          K=""
+          for c in Image.gz-dtb Image; do
+            if [ -f "kernel_source/out/arch/arm64/boot/$c" ]; then
+              K="kernel_source/out/arch/arm64/boot/$c"; break
+            fi
+          done
+          [ -n "$K" ] || { echo "FATAL: no kernel image to package"; exit 1; }
           echo "kernel image: $K"
           cp "$K" "ak3/$(basename "$K")"
           rm -rf ak3/.git ak3/ramdisk/placeholder 2>/dev/null || true
