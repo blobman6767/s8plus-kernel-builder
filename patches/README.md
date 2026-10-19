@@ -108,3 +108,29 @@ A sweep for every other site that `THREAD_INFO_IN_TASK` could break
 `current_thread_info()->task`) found only two more, both already correct:
 `arch/arm64/include/asm/current.h` reads `sp_el0` under the option, and
 `include/asm-generic/current.h` is not used by arm64.
+
+## Fixes found by build 10 (link stage)
+
+Build 10 compiled the **whole kernel** and then failed linking `vmlinux`:
+
+    fs/stat.c:386: undefined reference to `ksu_handle_newfstat_ret'
+    fs/stat.c:508: undefined reference to `ksu_handle_fstat64_ret'
+
+The driver defines both only inside `#ifdef CONFIG_KSU_MANUAL_HOOK`
+(`runtime/ksud_integration.c`, guard opens at line 593). SUSFS inline hook is a
+*different member of the same kconfig choice*, so in a SUSFS build they do not
+exist - and `inline_hook_check.mk` never asks for them, only
+`manual_hook_check.mk` does. The redmi tree handles this exactly this way:
+its `*_ret` call sites are guarded `#ifdef CONFIG_KSU_MANUAL_HOOK`, and in
+SUSFS mode it instead calls `ksu_handle_vfs_fstat(fd, &stat->size)` from
+`vfs_fstat()` behind the `ksu_is_init_rc_hook_enabled` static key - that is how
+ksud gets its init.rc injected.
+
+So: the three `#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)`
+guards in `fs/stat.c` gained `&& !defined(CONFIG_KSU_SUSFS)`, and `vfs_fstat()`
+gained the `ksu_handle_vfs_fstat` hook.
+
+The linker reporting *only* these two also confirms `ksu_handle_sys_read`,
+`ksu_handle_input_handle_event`, `ksu_handle_setresuid`, `ksu_handle_stat`,
+`ksu_handle_faccessat`, `ksu_handle_execveat`, `ksu_handle_sys_reboot` and
+`ksu_su_compat_enabled` all resolve in SUSFS mode.

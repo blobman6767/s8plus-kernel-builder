@@ -1764,7 +1764,7 @@ index 3494d7a8..e58dd1f4 100644
  	return error;
  }
 diff --git a/fs/stat.c b/fs/stat.c
-index a38d6387..2c7e7966 100644
+index a38d6387..26a50a64 100644
 --- a/fs/stat.c
 +++ b/fs/stat.c
 @@ -17,6 +17,13 @@
@@ -1816,7 +1816,29 @@ index a38d6387..2c7e7966 100644
  
  	generic_fillattr(inode, stat);
  	return 0;
-@@ -87,12 +113,24 @@ int vfs_fstat(unsigned int fd, struct kstat *stat)
+@@ -74,6 +100,11 @@ int vfs_getattr(struct path *path, struct kstat *stat)
+ 
+ EXPORT_SYMBOL(vfs_getattr);
+ 
++#ifdef CONFIG_KSU_SUSFS
++extern struct static_key_true ksu_is_init_rc_hook_enabled;
++extern void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr);
++#endif
++
+ int vfs_fstat(unsigned int fd, struct kstat *stat)
+ {
+ 	struct fd f = fdget_raw(fd);
+@@ -81,18 +112,34 @@ int vfs_fstat(unsigned int fd, struct kstat *stat)
+ 
+ 	if (f.file) {
+ 		error = vfs_getattr(&f.file->f_path, stat);
++#ifdef CONFIG_KSU_SUSFS
++		if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
++			ksu_handle_vfs_fstat(fd, &stat->size);
++#endif
+ 		fdput(f);
+ 	}
+ 	return error;
  }
  EXPORT_SYMBOL(vfs_fstat);
  
@@ -1841,7 +1863,7 @@ index a38d6387..2c7e7966 100644
  
  	if ((flag & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
  		      AT_EMPTY_PATH)) != 0)
-@@ -103,7 +141,23 @@ int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
+@@ -103,7 +150,23 @@ int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
  	if (flag & AT_EMPTY_PATH)
  		lookup_flags |= LOOKUP_EMPTY;
  retry:
@@ -1865,7 +1887,7 @@ index a38d6387..2c7e7966 100644
  	if (error)
  		goto out;
  
-@@ -287,7 +341,7 @@ SYSCALL_DEFINE2(newlstat, const char __user *, filename,
+@@ -287,7 +350,7 @@ SYSCALL_DEFINE2(newlstat, const char __user *, filename,
  	return cp_new_stat(&stat, statbuf);
  }
  
@@ -1874,7 +1896,7 @@ index a38d6387..2c7e7966 100644
  __attribute__((hot)) 
  extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
  				int *flags);
-@@ -301,7 +355,9 @@ SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
+@@ -301,7 +364,9 @@ SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
  	int error;
  
  #ifdef CONFIG_KSU
@@ -1884,7 +1906,34 @@ index a38d6387..2c7e7966 100644
  #endif
  
  	error = vfs_fstatat(dfd, filename, &stat, flag);
-@@ -462,7 +518,9 @@ SYSCALL_DEFINE4(fstatat64, int, dfd, const char __user *, filename,
+@@ -311,7 +376,7 @@ SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
+ }
+ #endif
+ 
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD) && !defined(CONFIG_KSU_SUSFS)
+ extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);
+ #if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
+ extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr); // for 32-bit
+@@ -326,7 +391,7 @@ SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
+ 	if (!error)
+ 		error = cp_new_stat(&stat, statbuf);
+ 
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD) && !defined(CONFIG_KSU_SUSFS)
+ 	ksu_handle_newfstat_ret(&fd, &statbuf);
+ #endif
+ 
+@@ -448,7 +513,7 @@ SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
+ 	if (!error)
+ 		error = cp_new_stat64(&stat, statbuf);
+ 
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD) // for 32-bit
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD) && !defined(CONFIG_KSU_SUSFS) // for 32-bit
+ 	ksu_handle_fstat64_ret(&fd, &statbuf);
+ #endif
+ 
+@@ -462,7 +527,9 @@ SYSCALL_DEFINE4(fstatat64, int, dfd, const char __user *, filename,
  	int error;
  
  #ifdef CONFIG_KSU // 32-bit su
