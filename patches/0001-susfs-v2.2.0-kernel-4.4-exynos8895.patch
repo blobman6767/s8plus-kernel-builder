@@ -51,19 +51,19 @@ index 81deaa39..21f3676a 100644
  obj-y +=	buffer.o block_dev.o direct-io.o mpage.o
  else
 diff --git a/fs/exec.c b/fs/exec.c
-index 65c9f136..1e117e84 100644
+index 65c9f136..74661315 100644
 --- a/fs/exec.c
 +++ b/fs/exec.c
-@@ -69,6 +69,9 @@
+@@ -66,6 +66,9 @@
+ #include "internal.h"
  
- #ifdef CONFIG_SECURITY_DEFEX
- #include <linux/defex.h>
+ #include <trace/events/sched.h>
 +#ifdef CONFIG_KSU_SUSFS
 +#include <linux/susfs_def.h>
 +#endif
- #endif
  
- #ifdef CONFIG_RKP_KDP
+ #ifdef CONFIG_SECURITY_DEFEX
+ #include <linux/defex.h>
 @@ -1749,6 +1752,16 @@ static int exec_binprm(struct linux_binprm *bprm)
  /*
   * sys_execve() executes a new program.
