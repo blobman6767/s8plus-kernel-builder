@@ -1140,7 +1140,7 @@ index 3c2a915c..273a6cb0 100644
  	if (seq_has_overflowed(m))
  		goto out;
 diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
-index 60bb25b9..5e991ab3 100644
+index 60bb25b9..3aab76c7 100644
 --- a/fs/proc/task_mmu.c
 +++ b/fs/proc/task_mmu.c
 @@ -14,6 +14,9 @@
@@ -1153,7 +1153,7 @@ index 60bb25b9..5e991ab3 100644
  
  #include <asm/elf.h>
  #include <asm/uaccess.h>
-@@ -336,6 +339,15 @@ static int is_stack(struct proc_maps_private *priv,
+@@ -336,6 +339,38 @@ static int is_stack(struct proc_maps_private *priv,
  		vma->vm_end >= vma->vm_mm->start_stack;
  }
  
@@ -1166,10 +1166,33 @@ index 60bb25b9..5e991ab3 100644
 +#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 +
 +
++#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
++/* The susfs open-redirect path needs to emit a /proc/<pid>/maps header on
++ * its own. The redmi tree factors this out already, but its version is
++ * built on print_vma_hex10()/print_vma_hex2() helpers this tree does not
++ * have, so reproduce exactly what show_map_vma() below prints inline. */
++static void show_vma_header_prefix(struct seq_file *m, unsigned long start,
++				   unsigned long end, vm_flags_t flags,
++				   unsigned long long pgoff, dev_t dev,
++				   unsigned long ino)
++{
++	seq_setwidth(m, 25 + sizeof(void *) * 6 - 1);
++	seq_printf(m, "%08lx-%08lx %c%c%c%c %08llx %02x:%02x %lu ",
++			start,
++			end,
++			flags & VM_READ ? 'r' : '-',
++			flags & VM_WRITE ? 'w' : '-',
++			flags & VM_EXEC ? 'x' : '-',
++			flags & VM_MAYSHARE ? 's' : 'p',
++			pgoff,
++			MAJOR(dev), MINOR(dev), ino);
++}
++#endif /* CONFIG_KSU_SUSFS_OPEN_REDIRECT */
++
  static void
  show_map_vma(struct seq_file *m, struct vm_area_struct *vma, int is_pid)
  {
-@@ -351,9 +363,36 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma, int is_pid)
+@@ -351,9 +386,36 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma, int is_pid)
  
  	if (file) {
  		struct inode *inode = file_inode(vma->vm_file);
@@ -1206,7 +1229,7 @@ index 60bb25b9..5e991ab3 100644
  	}
  
  	/* We don't show the stack guard page in /proc/maps */
-@@ -730,6 +769,11 @@ static int show_smap(struct seq_file *m, void *v, int is_pid)
+@@ -730,6 +792,11 @@ static int show_smap(struct seq_file *m, void *v, int is_pid)
  	};
  
  	memset(&mss, 0, sizeof mss);
@@ -1218,7 +1241,7 @@ index 60bb25b9..5e991ab3 100644
  	/* mmap_sem is held in m_start */
  	walk_page_vma(vma, &smaps_walk);
  
-@@ -1467,6 +1511,9 @@ static ssize_t pagemap_read(struct file *file, char __user *buf,
+@@ -1467,6 +1534,9 @@ static ssize_t pagemap_read(struct file *file, char __user *buf,
  	while (count && (start_vaddr < end_vaddr)) {
  		int len;
  		unsigned long end;
@@ -1228,7 +1251,7 @@ index 60bb25b9..5e991ab3 100644
  
  		pm.pos = 0;
  		end = (start_vaddr + PAGEMAP_WALK_SIZE) & PAGEMAP_WALK_MASK;
-@@ -1474,7 +1521,15 @@ static ssize_t pagemap_read(struct file *file, char __user *buf,
+@@ -1474,7 +1544,15 @@ static ssize_t pagemap_read(struct file *file, char __user *buf,
  		if (end < start_vaddr || end > end_vaddr)
  			end = end_vaddr;
  		down_read(&mm->mmap_sem);
