@@ -23,8 +23,14 @@ on:
         description: 'Defconfig'
         required: true
         default: 'exynos8895-dream2lte_defconfig'
+      hook_mode:
+        description: 'KSU hook mode. manual = required for 4.4 (TRACEPOINT is GKI 5.10+ only); keep = leave the defconfig/Kconfig default'
+        required: true
+        default: 'keep'
+        type: choice
+        options: ['keep', 'manual']
       enable_susfs:
-        description: 'Append SUSFS configs to the defconfig'
+        description: 'Append SUSFS configs to the defconfig (needs susfs kernel sources - BakaSU does NOT ship them)'
         required: true
         default: 'true'
         type: choice
@@ -66,14 +72,17 @@ jobs:
           sudo apt-get install -y -qq bc bison flex libssl-dev build-essential \
             libncurses-dev zip unzip git ccache python3 cpio rsync kmod
 
-      - name: Fetch AOSP GCC 4.9 toolchain (TARGET_KERNEL_CLANG_COMPILE=false)
+      - name: Fetch GCC 4.9 toolchain (LineageOS prebuilt; ROM sets TARGET_KERNEL_CLANG_COMPILE=false)
         run: |
+          set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/tc"
           cd "$GITHUB_WORKSPACE/tc"
-          git clone --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+          git clone --depth=1 -b master \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 \
             gcc4.9
-          ls gcc4.9/bin | head -5
+          echo "--- toolchain binaries ---"
+          ls gcc4.9/bin | grep -E 'gcc$|ld$|as$' | head -10
+          test -x gcc4.9/bin/aarch64-linux-android-gcc
           echo "TC=$GITHUB_WORKSPACE/tc/gcc4.9/bin" >> $GITHUB_ENV
 
       - name: Clone kernel source
@@ -112,6 +121,16 @@ jobs:
             sed -i 's|^CONFIG_LOCALVERSION_AUTO=y|# CONFIG_LOCALVERSION_AUTO is not set|' "$D"
           fi
 
+          if [ "${{ inputs.hook_mode }}" = "manual" ]; then
+            {
+              echo ''
+              echo '# === hook mode: TRACEPOINT is GKI 5.10+ only; 4.4 needs manual hooks ==='
+              echo '# CONFIG_KSU_TRACEPOINT_HOOK is not set'
+              echo '# CONFIG_KSU_KPROBES_HOOK is not set'
+              echo 'CONFIG_KSU_MANUAL_HOOK=y'
+            } >> "$D"
+          fi
+
           if [ "${{ inputs.enable_susfs }}" = "true" ]; then
             {
               echo ''
@@ -138,6 +157,7 @@ jobs:
 
       - name: Build
         run: |
+          set -euo pipefail
           cd kernel_source
           export PATH="$TC:$PATH"
           export ARCH=arm64 SUBARCH=arm64
@@ -151,14 +171,16 @@ jobs:
           echo "CROSS_COMPILE=$CROSS_COMPILE"
           aarch64-linux-android-gcc --version | head -1
 
-          make O=out ARCH=arm64 "${{ inputs.defconfig }}" 2>&1 | tail -20
+          make O=out ARCH=arm64 "${{ inputs.defconfig }}"
           echo "=== resolved KSU/SUSFS/localversion in .config ==="
-          grep -E '^#? ?CONFIG_(KSU|LOCALVERSION)' out/.config | head -30 || true
+          grep -E '^#? ?CONFIG_(KSU|LOCALVERSION)' out/.config | head -40 || true
 
-          make O=out ARCH=arm64 -j"$(nproc)" 2>&1 | tail -60
+          # NOTE: never pipe make - a pipe's exit status comes from the last
+          # command and silently masks compile failures (cost us build 1).
+          make O=out ARCH=arm64 -j"$(nproc)"
 
           echo "=== artifacts ==="
-          ls -l out/arch/arm64/boot/ || true
+          ls -l out/arch/arm64/boot/
 
       - name: Package AnyKernel3
         if: success()
