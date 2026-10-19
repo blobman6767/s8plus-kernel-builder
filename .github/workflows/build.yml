@@ -1,0 +1,188 @@
+name: Build universal8895 kernel (dream2lte) + KSU/SUSFS
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: 'Kernel source (git URL)'
+        required: true
+        default: 'https://codeberg.org/universal8895/kernel_samsung_universal8895'
+      kernel_branch:
+        description: 'Kernel branch'
+        required: true
+        default: 'lineage-23.2'
+      ksu_repo:
+        description: 'KernelSU fork to vendor into KernelSU/ (Baka-SU/BakaSU has inline SUSFS; backslashxx/KernelSU is the ROM stock, no SUSFS)'
+        required: true
+        default: 'https://github.com/Baka-SU/BakaSU'
+      ksu_ref:
+        description: 'KernelSU ref (branch/tag/commit; "default" = repo default branch)'
+        required: true
+        default: 'default'
+      defconfig:
+        description: 'Defconfig'
+        required: true
+        default: 'exynos8895-dream2lte_defconfig'
+      enable_susfs:
+        description: 'Append SUSFS configs to the defconfig'
+        required: true
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+      identity_spoof:
+        description: 'Make the kernel report a stock-like Samsung identity'
+        required: true
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+      localversion:
+        description: 'CONFIG_LOCALVERSION when identity_spoof=true'
+        required: false
+        default: '-21427293'
+      build_user:
+        description: 'KBUILD_BUILD_USER'
+        required: false
+        default: 'dpi'
+      build_host:
+        description: 'KBUILD_BUILD_HOST'
+        required: false
+        default: 'SWDD6919'
+      build_timestamp:
+        description: 'KBUILD_BUILD_TIMESTAMP'
+        required: false
+        default: 'Tue Apr  6 19:35:32 KST 2021'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout builder
+        uses: actions/checkout@v4
+        with: { path: builder }
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison flex libssl-dev build-essential \
+            libncurses-dev zip unzip git ccache python3 cpio rsync kmod
+
+      - name: Fetch AOSP GCC 4.9 toolchain (TARGET_KERNEL_CLANG_COMPILE=false)
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/tc"
+          cd "$GITHUB_WORKSPACE/tc"
+          git clone --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+            gcc4.9
+          ls gcc4.9/bin | head -5
+          echo "TC=$GITHUB_WORKSPACE/tc/gcc4.9/bin" >> $GITHUB_ENV
+
+      - name: Clone kernel source
+        run: |
+          git clone --depth=1 -b "${{ inputs.kernel_branch }}" \
+            "${{ inputs.kernel_repo }}" kernel_source
+          cd kernel_source
+          echo "--- version ---"; head -5 Makefile | grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL)'
+
+      - name: Vendor the KernelSU fork into KernelSU/
+        run: |
+          cd kernel_source
+          rm -rf KernelSU
+          if [ "${{ inputs.ksu_ref }}" = "default" ]; then
+            git clone --depth=1 "${{ inputs.ksu_repo }}" KernelSU
+          else
+            git clone --depth=1 -b "${{ inputs.ksu_ref }}" "${{ inputs.ksu_repo }}" KernelSU
+          fi
+          echo "--- KernelSU tree ---"; ls KernelSU
+          echo "--- driver dir ---";   ls KernelSU/kernel | head -20
+          echo "--- version markers ---"
+          grep -rnE 'KSU_VERSION|SUSFS_VERSION' KernelSU/kernel/Makefile KernelSU/kernel/Kconfig 2>/dev/null | head -5 || true
+          echo "--- does this fork carry inline SUSFS? ---"
+          ls KernelSU/kernel | grep -i susfs || echo "  (no susfs files in KernelSU/kernel)"
+          find KernelSU -maxdepth 3 -iname '*susfs*' | head -10 || true
+
+      - name: Patch defconfig
+        run: |
+          cd kernel_source
+          D="arch/arm64/configs/${{ inputs.defconfig }}"
+          cp "$D" "$D.orig"
+
+          if [ "${{ inputs.identity_spoof }}" = "true" ]; then
+            # strip the custom markers: emoji localversion + git-hash auto-append
+            sed -i 's|^CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION="${{ inputs.localversion }}"|' "$D"
+            sed -i 's|^CONFIG_LOCALVERSION_AUTO=y|# CONFIG_LOCALVERSION_AUTO is not set|' "$D"
+          fi
+
+          if [ "${{ inputs.enable_susfs }}" = "true" ]; then
+            {
+              echo ''
+              echo '# === SUSFS (appended last: KSU hook mode may be a Kconfig choice) ==='
+              echo 'CONFIG_KSU=y'
+              echo 'CONFIG_KSU_SUSFS=y'
+              echo 'CONFIG_KSU_SUSFS_SUS_PATH=y'
+              echo 'CONFIG_KSU_SUSFS_SUS_MOUNT=y'
+              echo 'CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y'
+              echo 'CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y'
+              echo 'CONFIG_KSU_SUSFS_SUS_KSTAT=y'
+              echo 'CONFIG_KSU_SUSFS_TRY_UMOUNT=y'
+              echo 'CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y'
+              echo 'CONFIG_KSU_SUSFS_SPOOF_UNAME=y'
+              echo 'CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y'
+              echo 'CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y'
+              echo 'CONFIG_KSU_SUSFS_OPEN_REDIRECT=y'
+              echo 'CONFIG_KSU_SUSFS_SUS_MAP=y'
+            } >> "$D"
+          fi
+
+          echo "=== diff ==="; diff "$D.orig" "$D" || true
+          rm -f "$D.orig"
+
+      - name: Build
+        run: |
+          cd kernel_source
+          export PATH="$TC:$PATH"
+          export ARCH=arm64 SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-android-
+          if [ "${{ inputs.identity_spoof }}" = "true" ]; then
+            export KBUILD_BUILD_USER='${{ inputs.build_user }}'
+            export KBUILD_BUILD_HOST='${{ inputs.build_host }}'
+            export KBUILD_BUILD_TIMESTAMP='${{ inputs.build_timestamp }}'
+            export KBUILD_BUILD_VERSION=1
+          fi
+          echo "CROSS_COMPILE=$CROSS_COMPILE"
+          aarch64-linux-android-gcc --version | head -1
+
+          make O=out ARCH=arm64 "${{ inputs.defconfig }}" 2>&1 | tail -20
+          echo "=== resolved KSU/SUSFS/localversion in .config ==="
+          grep -E '^#? ?CONFIG_(KSU|LOCALVERSION)' out/.config | head -30 || true
+
+          make O=out ARCH=arm64 -j"$(nproc)" 2>&1 | tail -60
+
+          echo "=== artifacts ==="
+          ls -l out/arch/arm64/boot/ || true
+
+      - name: Package AnyKernel3
+        if: success()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
+          cp builder/anykernel/anykernel.sh ak3/anykernel.sh
+          K=$(ls kernel_source/out/arch/arm64/boot/Image.gz-dtb \
+                 kernel_source/out/arch/arm64/boot/Image.gz \
+                 kernel_source/out/arch/arm64/boot/Image 2>/dev/null | head -1)
+          echo "kernel image: $K"
+          cp "$K" "ak3/$(basename "$K")"
+          rm -rf ak3/.git ak3/ramdisk/placeholder 2>/dev/null || true
+          cd ak3 && zip -r9 "../dream2lte-ksu-susfs.zip" . -x '.git*' >/dev/null
+          cd .. && ls -l dream2lte-ksu-susfs.zip
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dream2lte-kernel-${{ github.run_number }}
+          path: |
+            dream2lte-ksu-susfs.zip
+            kernel_source/out/arch/arm64/boot/Image*
+            kernel_source/out/.config
+          if-no-files-found: warn
+          retention-days: 30
