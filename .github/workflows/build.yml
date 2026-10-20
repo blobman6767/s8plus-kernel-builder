@@ -155,11 +155,18 @@ jobs:
             cp -a ksusnap/drivers/kernelsu KernelSU/kernel
             rm -rf ksusnap
           else
+            # FULL clone, not --depth=1. Newer ReSukiSU/BakaSU derives its
+            # version from `git rev-list --count HEAD`, so a shallow clone
+            # yields 1 and the driver reports 30701 instead of 35171 - a
+            # version skew against the manager, which is exactly the class of
+            # bug we are trying to get rid of.
             if [ "${{ inputs.ksu_ref }}" = "default" ]; then
-              git clone --depth=1 "${{ inputs.ksu_repo }}" ksuclone
+              git clone "${{ inputs.ksu_repo }}" ksuclone
             else
-              git clone --depth=1 -b "${{ inputs.ksu_ref }}" "${{ inputs.ksu_repo }}" ksuclone
+              git clone -b "${{ inputs.ksu_ref }}" "${{ inputs.ksu_repo }}" ksuclone
             fi
+            echo "--- commit count (drives KSU_VERSION) ---"
+            git -C ksuclone rev-list --count HEAD
             # upstream layout already has kernel/
             cp -a ksuclone KernelSU_tmp && rm -rf KernelSU && mv KernelSU_tmp KernelSU
             rm -rf ksuclone
